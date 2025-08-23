@@ -1,2 +1,3 @@
+/docker/postgres/data
 /tmp
-# /.env # uncomment this line to add .env to your gitignore
+.env

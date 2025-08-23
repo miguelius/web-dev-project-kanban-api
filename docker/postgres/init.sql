@@ -1,0 +1,2 @@
+CREATE TABLE projects (name TEXT NOT NULL, repo_url TEXT, site_url TEXT, description TEXT, dependencies TEXT[], dev_dependencies TEXT[], status TEXT NOT NULL CHECK (status IN ('backlog', 'developing', 'done')));
+CREATE TABLE users (username TEXT NOT NULL UNIQUE, password TEXT NOT NULL);
