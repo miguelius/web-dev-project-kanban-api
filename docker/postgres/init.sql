@@ -16,5 +16,5 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql VOLATILE;
 
-CREATE TABLE projects (name TEXT NOT NULL, repo_url TEXT, site_url TEXT, description TEXT, dependencies TEXT[], dev_dependencies TEXT[], status TEXT NOT NULL CHECK (status IN ('backlog', 'developing', 'done')));
+CREATE TABLE projects (name TEXT NOT NULL, repo_url TEXT, site_url TEXT, description TEXT, dependencies TEXT[], dev_dependencies TEXT[], status TEXT NOT NULL CHECK (status IN ('backlog', 'developing', 'done')), user_id TEXT NOT NULL, xata_id TEXT DEFAULT generate_uid(10) );
 CREATE TABLE users (username TEXT NOT NULL UNIQUE, password TEXT NOT NULL, xata_id TEXT DEFAULT generate_uid(10));

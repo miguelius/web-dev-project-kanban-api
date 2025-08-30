@@ -16,6 +16,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
 	"github.com/justinas/alice"
+	"github.com/lib/pq"
 	_ "github.com/lib/pq"
 	"github.com/xeipuuv/gojsonschema"
 	"golang.org/x/crypto/bcrypt"
@@ -67,16 +68,21 @@ func main() {
 
 	log.Println("Setting up routes...")
 
+	// Middleware chain and routes for user auth
 	userChain := alice.New(loggingMiddleware, validateMiddleware(userSchema))
 	router.Handle("/login", userChain.ThenFunc(app.Login)).Methods("POST")
 	router.Handle("/register", userChain.ThenFunc(app.Register)).Methods("POST")
 
-	projectChain := alice.New(loggingMiddleware, app.jwtMiddleware, validateMiddleware(projectSchema))
+	// Middleware chain and routes for getting and deleting projects that do not require body
+	projectChain := alice.New(loggingMiddleware, app.jwtMiddleware)
 	router.Handle("/projects", alice.New(loggingMiddleware, app.jwtMiddleware).ThenFunc(app.GetProjects)).Methods("GET")
-	router.Handle("/projects", projectChain.ThenFunc(app.CreateProject)).Methods("POST")
-	router.Handle("/projects/{id}", alice.New(loggingMiddleware, app.jwtMiddleware).ThenFunc(app.GetProject)).Methods("GET")
-	router.Handle("/projects/{id}", projectChain.ThenFunc(app.UpdateProject)).Methods("PUT")
-	router.Handle("/projects/{id}", alice.New(loggingMiddleware, app.jwtMiddleware).ThenFunc(app.DeleteProject)).Methods("DELETE")
+	router.Handle("/projects/{xata_id}", alice.New(loggingMiddleware, app.jwtMiddleware).ThenFunc(app.GetProject)).Methods("GET")
+	router.Handle("/projects/{xata_id}", alice.New(loggingMiddleware, app.jwtMiddleware).ThenFunc(app.DeleteProject)).Methods("DELETE")
+
+	// Middleware chain and routes for creating and updating project
+	projectWithValidaationChain := projectChain.Append(validateMiddleware(projectSchema))
+	router.Handle("/projects", projectWithValidaationChain.ThenFunc(app.CreateProject)).Methods("POST")
+	router.Handle("/projects/{xata_id}", projectWithValidaationChain.ThenFunc(app.UpdateProject)).Methods("PUT")
 
 	router.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-type", "application/json")
@@ -124,7 +130,7 @@ func (app *App) jwtMiddleware(next http.Handler) http.Handler {
 			RespondWithError(w, http.StatusUnauthorized, "Invalid token")
 			return
 		}
-		ctx := context.WithValue(r.Context(), "claims", claims)
+		ctx := context.WithValue(r.Context(), "claims", &claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -295,19 +301,54 @@ func (app *App) Login(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(UserResponse{XataID: xataID, Username: creds.Username, Token: tokenString})
 }
 
+type Project struct {
+	XataID          string   `json:"xata_id,omitempty"`
+	UserID          string   `json:"user,omitempty"`
+	Name            string   `json:"name,omitempty"`
+	RepoURL         string   `json:"repo_url,omitempty"`
+	SiteURL         string   `json:"site_url,omitempty"`
+	Description     string   `json:"description,omitempty"`
+	Dependencies    []string `json:"dependencies,omitempty"`
+	DevDependencies []string `json:"dev_dependencies,omitempty"`
+	Status          string   `json:"status,omitempty"`
+}
+
 type RouteResponse struct {
 	Message string `json:"message"`
 	ID      string `json:"id,omitempty"`
 }
 
 func (app *App) CreateProject(w http.ResponseWriter, r *http.Request) {
+	var project Project
+
+	err := json.NewDecoder(r.Body).Decode(&project)
+	if err != nil {
+		log.Println(err)
+		RespondWithError(w, http.StatusBadRequest, "Invalid request payload")
+		return
+	}
+
+	claims := r.Context().Value("claims").(*Claims)
+	userID := claims.XataID
+
+	var xataID string
+	err = app.DB.QueryRow("INSERT INTO projects (user_id, name, repo_url, site_url, description, dependencies, dev_dependencies, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING xata_id", userID, project.Name, project.RepoURL, project.SiteURL, project.Description, pq.Array(project.Dependencies), pq.Array(project.DevDependencies), project.Status).Scan(&xataID)
+	if err != nil {
+		log.Println(err)
+		RespondWithError(w, http.StatusInternalServerError, "Error creating project")
+		return
+	}
+
+	project.UserID = userID
+	project.XataID = xataID
+
 	w.Header().Set("Content-type", "application/json")
-	json.NewEncoder(w).Encode(RouteResponse{Message: "Hola, guachín!"})
+	json.NewEncoder(w).Encode(project)
 }
 
 func (app *App) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	id := vars["id"]
+	id := vars["xata_id"]
 
 	w.Header().Set("Content-type", "application/json")
 
@@ -315,24 +356,72 @@ func (app *App) UpdateProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *App) GetProjects(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	id := vars["id"]
+	claims := r.Context().Value("claims").(*Claims)
+	userID := claims.XataID
+
+	rows, err := app.DB.Query("SELECT xata_id, user_id, name, repo_url, site_url, description, dependencies, dev_dependencies, status FROM projects WHERE user_id = $1", userID)
+	if err != nil {
+		log.Println(err)
+		RespondWithError(w, http.StatusInternalServerError, "Error looking for projects")
+		return
+	}
+
+	var projects []Project
+	for rows.Next() {
+		var project Project
+		var dependencies, devDependencies []string
+		err = rows.Scan(&project.XataID, &project.UserID, &project.Name, &project.RepoURL, &project.SiteURL, &project.Description, pq.Array(&dependencies), pq.Array(&devDependencies), &project.Status)
+		if err != nil {
+			log.Println(err)
+			log.Println("Error scanning project")
+		}
+		project.Dependencies = dependencies
+		project.DevDependencies = devDependencies
+
+		projects = append(projects, project)
+	}
+
+	err = rows.Err()
+	if err != nil {
+		log.Println(err)
+		RespondWithError(w, http.StatusInternalServerError, "Error fetching for projects")
+		return
+	}
 
 	w.Header().Set("Content-type", "application/json")
-	json.NewEncoder(w).Encode(RouteResponse{Message: "Hola, guachín!", ID: id})
+	json.NewEncoder(w).Encode(projects)
 }
 
 func (app *App) GetProject(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	id := vars["id"]
+	xataID := vars["xata_id"]
+
+	claims := r.Context().Value("claims").(*Claims)
+	userID := claims.XataID
+
+	var project Project
+	var dependencies, devDependencies []string
+	err := app.DB.QueryRow("SELECT xata_id, user_id, name, repo_url, site_url, description, dependencies, dev_dependencies, status FROM projects WHERE user_id = $1 and xata_id = $2", userID, xataID).Scan(&project.XataID, &project.UserID, &project.Name, &project.RepoURL, &project.SiteURL, &project.Description, pq.Array(&dependencies), pq.Array(&devDependencies), &project.Status)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			RespondWithError(w, http.StatusNotFound, "Project not found.")
+			return
+		}
+		log.Println(err)
+		RespondWithError(w, http.StatusInternalServerError, "Error looking for projects")
+		return
+	}
+
+	project.Dependencies = dependencies
+	project.DevDependencies = devDependencies
 
 	w.Header().Set("Content-type", "application/json")
-	json.NewEncoder(w).Encode(RouteResponse{Message: "Hola, guachín!", ID: id})
+	json.NewEncoder(w).Encode(project)
 }
 
 func (app *App) DeleteProject(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	id := vars["id"]
+	id := vars["xata_id"]
 
 	w.Header().Set("Content-type", "application/json")
 	json.NewEncoder(w).Encode(RouteResponse{Message: "Hola, guachín!", ID: id})
