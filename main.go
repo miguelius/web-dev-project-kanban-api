@@ -17,7 +17,6 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/justinas/alice"
 	"github.com/lib/pq"
-	_ "github.com/lib/pq"
 	"github.com/xeipuuv/gojsonschema"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -348,11 +347,52 @@ func (app *App) CreateProject(w http.ResponseWriter, r *http.Request) {
 
 func (app *App) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	id := vars["xata_id"]
+	xataID := vars["xata_id"]
+
+	claims := r.Context().Value("claims").(*Claims)
+	userID := claims.XataID
+
+	var storedUserId string
+	//var project Project
+	//var dependencies, devDependencies []string
+	err := app.DB.QueryRow("SELECT user_id FROM projects WHERE xata_id = $1", xataID).Scan(&storedUserId)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			RespondWithError(w, http.StatusNotFound, "Project not found.")
+			return
+		}
+		log.Println(err)
+		RespondWithError(w, http.StatusInternalServerError, "Error looking for projects")
+		return
+	}
+
+	if storedUserId != userID {
+		RespondWithError(w, http.StatusForbidden, "User not allowed to update this project")
+		return
+	}
+
+	var project Project
+	err = json.NewDecoder(r.Body).Decode(&project)
+	if err != nil {
+		log.Println(err)
+		RespondWithError(w, http.StatusBadRequest, "Invalid request payload")
+		return
+	}
+
+	_, err = app.DB.Exec("UPDATE projects SET name=$1, repo_url=$2, site_url=$3, description=$4, dependencies=$5, dev_dependencies=$6, status=$7 WHERE xata_id = $8 AND user_id = $9", project.Name, project.RepoURL, project.SiteURL, project.Description, pq.Array(project.Dependencies), pq.Array(project.DevDependencies), project.Status, xataID, userID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			RespondWithError(w, http.StatusNotFound, "Project not found.")
+			return
+		}
+		log.Println(err)
+		RespondWithError(w, http.StatusInternalServerError, "Error updating project")
+		return
+	}
 
 	w.Header().Set("Content-type", "application/json")
 
-	json.NewEncoder(w).Encode(RouteResponse{Message: "Hola, guachín!", ID: id})
+	json.NewEncoder(w).Encode(project)
 }
 
 func (app *App) GetProjects(w http.ResponseWriter, r *http.Request) {
@@ -366,7 +406,7 @@ func (app *App) GetProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var projects []Project
+	projects := []Project{}
 	for rows.Next() {
 		var project Project
 		var dependencies, devDependencies []string
@@ -421,8 +461,30 @@ func (app *App) GetProject(w http.ResponseWriter, r *http.Request) {
 
 func (app *App) DeleteProject(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	id := vars["xata_id"]
+	xataID := vars["xata_id"]
+
+	claims := r.Context().Value("claims").(*Claims)
+	userID := claims.XataID
+
+	var storedUserId string
+	//var project Project
+	//var dependencies, devDependencies []string
+	err := app.DB.QueryRow("SELECT user_id FROM projects WHERE xata_id = $1", xataID).Scan(&storedUserId)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			RespondWithError(w, http.StatusNotFound, "Project not found.")
+			return
+		}
+		log.Println(err)
+		RespondWithError(w, http.StatusInternalServerError, "Error looking for projects")
+		return
+	}
+
+	if storedUserId != userID {
+		RespondWithError(w, http.StatusForbidden, "User not allowed to delete this project")
+		return
+	}
 
 	w.Header().Set("Content-type", "application/json")
-	json.NewEncoder(w).Encode(RouteResponse{Message: "Hola, guachín!", ID: id})
+	json.NewEncoder(w).Encode(RouteResponse{Message: "Hola, guachín!", ID: xataID})
 }
