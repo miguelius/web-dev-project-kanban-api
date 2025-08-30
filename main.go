@@ -353,8 +353,6 @@ func (app *App) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	userID := claims.XataID
 
 	var storedUserId string
-	//var project Project
-	//var dependencies, devDependencies []string
 	err := app.DB.QueryRow("SELECT user_id FROM projects WHERE xata_id = $1", xataID).Scan(&storedUserId)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -389,6 +387,9 @@ func (app *App) UpdateProject(w http.ResponseWriter, r *http.Request) {
 		RespondWithError(w, http.StatusInternalServerError, "Error updating project")
 		return
 	}
+
+	project.UserID = userID
+	project.XataID = xataID
 
 	w.Header().Set("Content-type", "application/json")
 
@@ -485,6 +486,12 @@ func (app *App) DeleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-type", "application/json")
-	json.NewEncoder(w).Encode(RouteResponse{Message: "Hola, guachín!", ID: xataID})
+	_, err = app.DB.Exec("DELETE FROM projects WHERE xata_id = $1 AND user_id = $2", xataID, userID)
+	if err != nil {
+		log.Println(err)
+		RespondWithError(w, http.StatusInternalServerError, "Error deleting project")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
