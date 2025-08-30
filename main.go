@@ -67,6 +67,20 @@ func main() {
 
 	log.Println("Setting up routes...")
 
+	setUpRouter(router, app, userSchema, projectSchema)
+
+	router.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-type", "application/json")
+
+		json.NewEncoder(w).Encode(RouteResponse{Message: "Hola, guachín!"})
+	}).Methods("GET")
+
+	log.Println("Listining on port 5001")
+	log.Fatal(http.ListenAndServe(":5001", router))
+}
+
+func setUpRouter(router *mux.Router, app App, userSchema string, projectSchema string) {
+
 	// Middleware chain and routes for user auth
 	userChain := alice.New(loggingMiddleware, validateMiddleware(userSchema))
 	router.Handle("/login", userChain.ThenFunc(app.Login)).Methods("POST")
@@ -82,15 +96,6 @@ func main() {
 	projectWithValidaationChain := projectChain.Append(validateMiddleware(projectSchema))
 	router.Handle("/projects", projectWithValidaationChain.ThenFunc(app.CreateProject)).Methods("POST")
 	router.Handle("/projects/{xata_id}", projectWithValidaationChain.ThenFunc(app.UpdateProject)).Methods("PUT")
-
-	router.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-type", "application/json")
-
-		json.NewEncoder(w).Encode(RouteResponse{Message: "Hola, guachín!"})
-	}).Methods("GET")
-
-	log.Println("Listining on port 5001")
-	log.Fatal(http.ListenAndServe(":5001", router))
 }
 
 func loggingMiddleware(next http.Handler) http.Handler {
